@@ -1,0 +1,9 @@
+# Database
+pbt.db
+*.db
+*.sqlite3
+ 
+# Python
+__pycache__/
+*.pyc
+*.pyo
