@@ -10,10 +10,12 @@ talks to it directly.
 ────────────────────────────────────────────────────────────
 """
 
-import sqlite3
 import os
+import sqlite3
 
-DB_FILE = os.path.join(os.path.expanduser("~"), "pbt.db")
+# # DB_FILE = os.path.join(os.path.expanduser("~"), "pbt.db")
+
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pbt.db")
 
 
 def get_conn():

@@ -2,14 +2,14 @@
 Personal Budget Tracker  — Dark Theme Edition
 """
 
-import json
 import csv
-import os
 import hashlib
-from tkinter import ttk, messagebox, filedialog
 import tkinter as tk
-from datetime import datetime, date
 from collections import defaultdict
+from datetime import datetime, timezone
+from tkinter import filedialog, messagebox, ttk
+
+from apiClient import APIClient, APIError
 
 # ════════════════════════════════════════════════════════
 #  DARK PALETTE
@@ -94,30 +94,13 @@ CATEGORIES = [
     "\U0001f4e6  Miscellaneous",
 ]
 
-DATA_FILE = os.path.join(os.path.expanduser("~"), "pbt_dark.json")
-
-
-# ════════════════════════════════════════════════════════
-#  PERSISTENCE
-# ════════════════════════════════════════════════════════
-def load_db():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"users": {}, "expenses": [],
-            "cat_budgets": {}, "mon_budgets": {}}
-
-
-def save_db(db):
-    with open(DATA_FILE, "w") as f:
-        json.dump(db, f, indent=2)
-
-
 def hash_pw(pw):
     return hashlib.sha256(pw.encode()).hexdigest()
+
+
+def _today():
+    """Timezone-aware replacement for date.today()."""
+    return datetime.now().astimezone().date()
 
 
 def _dk(h, a=18):
@@ -330,14 +313,31 @@ class BudgetTracker(tk.Tk):
         self.geometry("1200x750")
         self.minsize(1020, 640)
         self.configure(bg=BG)
-        self.db           = load_db()
+        self.client       = APIClient()
+        self.db           = {"expenses": [], "cat_budgets": {}, "mon_budgets": {}}
         self.user         = None
         self._nav_active  = None
         self._flt_cat     = tk.StringVar(value="All")
         self._flt_sort    = tk.StringVar(value="Newest")
         self._flt_search  = tk.StringVar()
+        self._refresh_db()
         self._build()
         self._go("dashboard")
+
+    # ════════════════════════════════════════════════════
+    #  DATA SYNC (talks to api.py, which owns pbt.db)
+    # ════════════════════════════════════════════════════
+    def _refresh_db(self):
+        """Pull the latest expenses/budgets from the API into self.db."""
+        try:
+            self.db["expenses"]    = self.client.get_expenses()
+            self.db["cat_budgets"] = self.client.get_category_budgets()
+            self.db["mon_budgets"] = self.client.get_monthly_budgets()
+        except APIError as err:
+            messagebox.showerror(
+                "API unreachable",
+                f"Could not reach the budget API:\n\n{err}\n\n"
+                "Make sure 'python api.py' is running first.")
 
     # ════════════════════════════════════════════════════
     #  SHELL
@@ -373,7 +373,7 @@ class BudgetTracker(tk.Tk):
                              highlightbackground=BORDER)
         date_pill.pack(side="left", pady=18, padx=(0, 14))
         L(date_pill,
-          f"  \U0001f4c5  {date.today().strftime('%d %b %Y')}  ",
+          f"  \U0001f4c5  {_today().strftime('%d %b %Y')}  ",
           FXS, TEXT2, CARD2).pack()
 
         self._user_lbl = L(rbar, "\u25cb  Guest", FSM, TEXT3, TOPBAR)
@@ -420,8 +420,8 @@ class BudgetTracker(tk.Tk):
                           relief="flat", bd=0, cursor="hand2",
                           padx=16, pady=10, anchor="w")
             b.pack(fill="x")
-            b.bind("<Enter>", lambda e, b=b: b.config(bg=CARD))
-            b.bind("<Leave>", lambda e, b=b: b.config(bg=SIDEBAR))
+            b.bind("<Enter>", lambda err, b=b: b.config(bg=CARD))
+            b.bind("<Leave>", lambda err, b=b: b.config(bg=SIDEBAR))
 
         # WORKSPACE
         self.ws = tk.Frame(body, bg=BG)
@@ -440,7 +440,7 @@ class BudgetTracker(tk.Tk):
         tl.pack(side="left")
 
         for w in (row, inner, il, tl):
-            w.bind("<Button-1>", lambda e, k=key: self._go(k))
+            w.bind("<Button-1>", lambda err, k=key: self._go(k))
 
         def on_enter(_):
             if key != self._nav_active:
@@ -513,7 +513,7 @@ class BudgetTracker(tk.Tk):
         if subtitle:
             L(vc, subtitle, FSM, TEXT3, TOPBAR).pack(anchor="w", pady=(1, 0))
 
-        L(hi, date.today().strftime("%A, %d %B %Y"),
+        L(hi, _today().strftime("%A, %d %B %Y"),
           FXS, TEXT3, TOPBAR).pack(side="right")
 
         if scroll:
@@ -560,10 +560,10 @@ class BudgetTracker(tk.Tk):
                        "Dashboard", "Your financial overview")
         exps   = self._mine()
         uid    = self.user or "__guest__"
-        month  = date.today().strftime("%Y-%m")
-        m_exps = [e for e in exps if e["date"].startswith(month)]
-        m_tot  = sum(e["amount"] for e in m_exps)
-        a_tot  = sum(e["amount"] for e in exps)
+        month  = _today().strftime("%Y-%m")
+        m_exps = [err for err in exps if err["date"].startswith(month)]
+        m_tot  = sum(err["amount"] for err in m_exps)
+        a_tot  = sum(err["amount"] for err in exps)
         mb     = self.db.get("mon_budgets", {}).get(uid, {})
         m_bud  = mb.get(month, 0)
         avg    = a_tot / len(exps) if exps else 0
@@ -603,7 +603,7 @@ class BudgetTracker(tk.Tk):
                      else "\u26a0  Watch Out" if pct_b < 1.0
                      else "\u2715  Over Budget")
             L(tr, f"\U0001f4c5   "
-              f"{date.today().strftime('%B %Y')} \u2014 Budget",
+              f"{_today().strftime('%B %Y')} \u2014 Budget",
               FH2, TEXT, CARD).pack(side="left")
             badge2 = tk.Frame(tr, bg=dim_b,
                               highlightthickness=1,
@@ -639,10 +639,10 @@ class BudgetTracker(tk.Tk):
 
         recent = sorted(exps, key=lambda x: x["date"], reverse=True)[:8]
         if recent:
-            for i, e in enumerate(recent):
+            for i, err in enumerate(recent):
                 rb  = CARD if i % 2 == 0 else CARD2
                 ci  = next((j for j, c in enumerate(CATEGORIES)
-                            if c == e["category"]), 0)
+                            if c == err["category"]), 0)
                 acc = ACCENT_PAL[ci % len(ACCENT_PAL)]
                 rw  = tk.Frame(rc, bg=rb, padx=18, pady=10)
                 rw.pack(fill="x")
@@ -652,13 +652,13 @@ class BudgetTracker(tk.Tk):
                 cv2.pack(side="left", padx=(0, 10))
                 mid = tk.Frame(rw, bg=rb)
                 mid.pack(side="left", fill="both", expand=True)
-                L(mid, e["category"],    FSM, TEXT2, rb).pack(anchor="w")
-                L(mid, e["description"], FXS, TEXT3, rb).pack(anchor="w")
+                L(mid, err["category"],    FSM, TEXT2, rb).pack(anchor="w")
+                L(mid, err["description"], FXS, TEXT3, rb).pack(anchor="w")
                 rr2 = tk.Frame(rw, bg=rb)
                 rr2.pack(side="right")
-                L(rr2, f"NPR {e['amount']:,.2f}",
-                  FMS, EM_GLOW, rb).pack(anchor="e")
-                L(rr2, e["date"], FXS, TEXT3, rb).pack(anchor="e")
+                L(rr2, f"NPR {err['amount']:,.2f}",
+                  FMS, EM_GLOW, rb).pack(anchor="err")
+                L(rr2, err["date"], FXS, TEXT3, rb).pack(anchor="err")
         else:
             Empty(rc, "\U0001f4b8", "No transactions yet",
                   "Add your first expense",
@@ -672,8 +672,8 @@ class BudgetTracker(tk.Tk):
         tk.Frame(cc, bg=BORDER, height=1).pack(fill="x")
 
         cat_t = defaultdict(float)
-        for e in m_exps:
-            cat_t[e["category"]] += e["amount"]
+        for err in m_exps:
+            cat_t[err["category"]] += err["amount"]
         grand = sum(cat_t.values()) or 1
 
         if cat_t:
@@ -955,7 +955,7 @@ class BudgetTracker(tk.Tk):
                 pill_bg = (f"#{max(0, r2 - 140):02x}"
                            f"{max(0, g2 - 140):02x}"
                            f"{max(0, b2 - 140):02x}")
-            except Exception:
+            except (ValueError, IndexError):
                 pill_bg = dim
 
             rw = tk.Frame(inner, bg=rb, padx=16, pady=10)
@@ -999,9 +999,12 @@ class BudgetTracker(tk.Tk):
         if messagebox.askyesno(
                 "Delete", "Delete this expense permanently?",
                 icon="warning"):
-            self.db["expenses"] = [
-                e for e in self.db["expenses"] if e["id"] != eid]
-            save_db(self.db)
+            try:
+                self.client.delete_expense(eid)
+            except APIError as err:
+                messagebox.showerror("Error", str(err))
+                return
+            self._refresh_db()
             self._render_hist(frame)
             Toast(self, "Expense deleted", "err")
 
@@ -1044,19 +1047,22 @@ class BudgetTracker(tk.Tk):
             try:
                 amt = float(av.get())
                 assert amt > 0
-                datetime.strptime(dtv.get(), "%Y-%m-%d")
-            except Exception:
+                datetime.strptime(dtv.get(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except (ValueError, AssertionError):
                 msg.config(text="\u26a0  Invalid amount or date")
                 return
-            for e in self.db["expenses"]:
-                if e["id"] == rec["id"]:
-                    e.update({
-                        "amount":      round(amt, 2),
-                        "category":    cv2.get(),
-                        "description": dv.get() or "\u2014",
-                        "date":        dtv.get(),
-                    })
-            save_db(self.db)
+            try:
+                self.client.update_expense(
+                    rec["id"],
+                    amount=round(amt, 2),
+                    category=cv2.get(),
+                    description=dv.get() or "\u2014",
+                    date=dtv.get(),
+                )
+            except APIError as err:
+                msg.config(text=f"\u26a0  {err}")
+                return
+            self._refresh_db()
             win.destroy()
             self._render_hist(frame)
             Toast(self, "Expense updated \u2713")
@@ -1090,7 +1096,7 @@ class BudgetTracker(tk.Tk):
         av  = tk.StringVar()
         cv2 = tk.StringVar(value=CATEGORIES[0])
         dv  = tk.StringVar()
-        dtv = tk.StringVar(value=str(date.today()))
+        dtv = tk.StringVar(value=str(_today()))
         nv  = tk.StringVar()
 
         for ltext, var, is_cb, hint in [
@@ -1117,31 +1123,34 @@ class BudgetTracker(tk.Tk):
             try:
                 amt = float(av.get().strip())
                 assert amt > 0
-            except Exception:
+            except (ValueError, AssertionError):
                 msg.config(text="\u26a0  Enter a valid positive amount",
                            fg=RED)
                 return
             try:
-                datetime.strptime(dtv.get().strip(), "%Y-%m-%d")
+                datetime.strptime(dtv.get().strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
             except ValueError:
                 msg.config(text="\u26a0  Date must be YYYY-MM-DD",
                            fg=RED)
                 return
 
-            self.db["expenses"].append({
-                "id":          str(datetime.now().timestamp()),
-                "user":        self.user or "__guest__",
-                "amount":      round(float(av.get()), 2),
-                "category":    cv2.get(),
-                "description": dv.get().strip() or "\u2014",
-                "date":        dtv.get().strip(),
-                "note":        nv.get().strip(),
-            })
-            save_db(self.db)
+            try:
+                self.client.add_expense(
+                    user=self.user or "__guest__",
+                    date=dtv.get().strip(),
+                    category=cv2.get(),
+                    description=dv.get().strip() or "\u2014",
+                    amount=round(float(av.get()), 2),
+                    note=nv.get().strip(),
+                )
+            except APIError as err:
+                msg.config(text=f"\u26a0  {err}", fg=RED)
+                return
+            self._refresh_db()
             av.set("")
             dv.set("")
             nv.set("")
-            dtv.set(str(date.today()))
+            dtv.set(str(_today()))
             cv2.set(CATEGORIES[0])
             msg.config(text="\u2705  Expense recorded!", fg=EM_GLOW)
             Toast(self, "Expense added \u2713")
@@ -1196,7 +1205,7 @@ class BudgetTracker(tk.Tk):
         for w in frame.winfo_children():
             w.destroy()
         uid   = self.user or "__guest__"
-        month = date.today().strftime("%Y-%m")
+        month = _today().strftime("%Y-%m")
         mb_v  = (self.db.get("mon_budgets", {})
                  .get(uid, {}).get(month, 0))
         m_tot = sum(
@@ -1253,11 +1262,15 @@ class BudgetTracker(tk.Tk):
             try:
                 amt = float(amtv.get())
                 assert amt > 0
-            except Exception:
+            except (ValueError, AssertionError):
                 msg.config(text="\u26a0  Enter a valid amount", fg=RED)
                 return
+            try:
+                self.client.set_category_budget(uid, catv.get(), round(amt, 2))
+            except APIError as err:
+                msg.config(text=f"\u26a0  {err}", fg=RED)
+                return
             buds[catv.get()] = round(amt, 2)
-            save_db(self.db)
             amtv.set("")
             msg.config(text="\u2705  Budget saved!", fg=EM_GLOW)
             Toast(self, "Budget saved \u2713")
@@ -1311,11 +1324,16 @@ class BudgetTracker(tk.Tk):
                       FXS, RED, RED_DIM).pack()
 
                 def mk_del_cat(c):
-                    return lambda: (
-                        buds.pop(c, None),
-                        save_db(self.db),
-                        _refresh(),
-                        Toast(self, "Budget removed", "err"))
+                    def _do():
+                        try:
+                            self.client.delete_category_budget(uid, c)
+                        except APIError as err:
+                            messagebox.showerror("Error", str(err))
+                            return
+                        buds.pop(c, None)
+                        _refresh()
+                        Toast(self, "Budget removed", "err")
+                    return _do
 
                 SmBtn(tr2, "\u2297  Remove",
                       mk_del_cat(cat), RED_DIM, RED).pack(side="right")
@@ -1341,7 +1359,7 @@ class BudgetTracker(tk.Tk):
         uid   = self.user or "__guest__"
         mb    = self.db.setdefault("mon_budgets", {}).setdefault(uid, {})
         exps  = self._mine()
-        today = date.today()
+        today = _today()
         cur_m = today.strftime("%Y-%m")
 
         sf2 = Card(p, padx=22, pady=20)
@@ -1378,11 +1396,15 @@ class BudgetTracker(tk.Tk):
             try:
                 amt = float(amtv2.get())
                 assert amt > 0
-            except Exception:
+            except (ValueError, AssertionError):
                 msg2.config(text="\u26a0  Enter a valid amount", fg=RED)
                 return
+            try:
+                self.client.set_monthly_budget(uid, selm.get(), round(amt, 2))
+            except APIError as err:
+                msg2.config(text=f"\u26a0  {err}", fg=RED)
+                return
             mb[selm.get()] = round(amt, 2)
-            save_db(self.db)
             amtv2.set("")
             msg2.config(
                 text=f"\u2705  Budget set for {selm.get()}!",
@@ -1532,11 +1554,16 @@ class BudgetTracker(tk.Tk):
                 mb_bg2.bind("<Configure>", draw_m)
 
                 def mk_del_mb(k):
-                    return lambda: (
-                        mb.pop(k, None),
-                        save_db(self.db),
-                        _refresh_hist(),
-                        Toast(self, "Budget removed", "err"))
+                    def _do():
+                        try:
+                            self.client.delete_monthly_budget(uid, k)
+                        except APIError as err:
+                            messagebox.showerror("Error", str(err))
+                            return
+                        mb.pop(k, None)
+                        _refresh_hist()
+                        Toast(self, "Budget removed", "err")
+                    return _do
 
                 SmBtn(rw2, "\u2297", mk_del_mb(mk),
                       RED_DIM, RED).pack(side="right")
@@ -1552,7 +1579,7 @@ class BudgetTracker(tk.Tk):
                        "Download data and review summaries",
                        scroll=True)
         exps   = self._mine()
-        month  = date.today().strftime("%Y-%m")
+        month  = _today().strftime("%Y-%m")
         cat_t3 = defaultdict(float)
         for e in exps:
             cat_t3[e["category"]] += e["amount"]
@@ -1689,26 +1716,15 @@ class BudgetTracker(tk.Tk):
             if not u or not pw:
                 msg3.config(text="\u26a0  Both fields required")
                 return
-            users = self.db.setdefault("users", {})
-            h = hash_pw(pw)
-            if u in users:
-                if users[u] != h:
-                    msg3.config(text="\u26a0  Incorrect password")
-                    return
-                act = f"Welcome back, {u}!"
-            else:
-                users[u] = h
-                save_db(self.db)
-                act = f"Account created!  Hi, {u}!"
+            try:
+                result = self.client.auth(u, hash_pw(pw))
+            except APIError as err:
+                msg3.config(text=f"\u26a0  {err}")
+                return
+            act = (f"Welcome back, {u}!" if result.get("status") == "login"
+                   else f"Account created!  Hi, {u}!")
             self.user = u
-            # Migrate any guest expenses to this account
-            migrated = 0
-            for e in self.db["expenses"]:
-                if e.get("user", "__guest__") == "__guest__":
-                    e["user"] = u
-                    migrated += 1
-            if migrated:
-                save_db(self.db)
+            self._refresh_db()
             self._auth_btn.config(
                 text=f"  \u23fb  Logout ({u})  ",
                 bg=RED_DIM, fg=RED,
@@ -1783,10 +1799,12 @@ class BudgetTracker(tk.Tk):
                 "Delete ALL your expenses?\nThis cannot be undone.",
                 icon="warning"):
             uid = self.user or "__guest__"
-            self.db["expenses"] = [
-                e for e in self.db["expenses"]
-                if e.get("user", "__guest__") != uid]
-            save_db(self.db)
+            try:
+                self.client.clear_expenses(uid)
+            except APIError as err:
+                messagebox.showerror("Error", str(err))
+                return
+            self._refresh_db()
             Toast(self, "All data cleared", "err")
             self._go("dashboard")
 
